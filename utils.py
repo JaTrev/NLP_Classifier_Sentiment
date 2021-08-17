@@ -30,7 +30,7 @@ def get_data(data: str):
     return data
 
 
-@st.cache
+@st.cache(allow_output_mutation=True)
 def preprocess_data(df: pd.DataFrame, options, max_freq):
     new_df = df.copy(deep=True)
 
@@ -175,10 +175,6 @@ def do_TF_vectorization(data: list, test_data:list = None):
     else:
         test_data_tf = None
 
-    print("testing vectors")
-    training_vectors = data_tf.toarray().tolist()
-    print(training_vectors[:2])
-
     return data_tf.toarray().tolist(), tf_vectorizer.get_feature_names(), test_data_tf.toarray().tolist()
 
 
@@ -190,7 +186,6 @@ def train_w2v_model(tokenized_data: list):
     return model
 
 
-# @st.cache
 def do_W2V_vectorization(training_tweets: pd.DataFrame, testing_tweets: pd.DataFrame, testing_labels: pd.DataFrame):
 
     testing_labels_list = testing_labels.values.tolist()
@@ -234,6 +229,7 @@ def do_W2V_vectorization(training_tweets: pd.DataFrame, testing_tweets: pd.DataF
     return new_training_df, new_testing_df
 
 
+@st.cache
 def train_bow_model(tokens: pd.DataFrame, use_tf_idf: bool = False):
 
     def dummy(temp_tokens):
