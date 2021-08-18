@@ -3,10 +3,15 @@ import numpy as np
 import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics import accuracy_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.experimental import enable_halving_search_cv  # explicitly require this experimental feature
+from sklearn.model_selection import HalvingRandomSearchCV
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
 # for text pre-processing
-import re, string
+import re
+import string
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import TweetTokenizer, word_tokenize
@@ -21,11 +26,6 @@ def get_data(data: str):
 
     if data == "Twitter Disaster Corpus":
         data = pd.read_csv("train.csv", index_col="id")[["text", "target"]]
-
-    print("len of data")
-    print(len(data))
-    print(data.describe())
-    print(data.head(-1))
 
     return data
 
@@ -61,8 +61,8 @@ def get_flags(options: list):
     return stop_word_flag, stop_word_dynamic_flag, lemmatization_flag
 
 
-# convert to lowercase, strip and remove punctuations
 def simple_preprocess(text):
+    # convert to lowercase, strip and remove punctuations
     text = text.lower()
     text = text.strip()
     text = re.sub(r'https?:\/\/\S*', '', text, flags=re.MULTILINE)
@@ -74,28 +74,28 @@ def simple_preprocess(text):
     text = re.sub(r'\d', ' ', text)
     text = re.sub(r'\s+', ' ', text)
 
-    tknzr = TweetTokenizer()
-    return tknzr.tokenize(text)
+    return TweetTokenizer().tokenize(text)
 
 
-# stopword removal
-def remove_stopwords(tokens, dynamic_flag=False, counter:Counter=None, max_value=-1):
+def remove_stopwords(tokens: list, dynamic_flag: bool = False, counter: Counter = None, max_value: int = -1):
 
     if dynamic_flag:
 
         assert isinstance(counter, Counter)
         assert max_value >= 0
-        processed_tokens = [i for i in tokens if counter[i] <= max_value]
+
+        tokens = [i for i in tokens if counter[i] <= max_value]
 
     processed_tokens = [i for i in tokens if i not in stopwords.words('english')]
 
     return processed_tokens
 
 
-# lemmatization
-def do_lemmatization(tokens):
+def do_lemmatization(tokens: list):
+
     wl = WordNetLemmatizer()
     processed_tokens = [wl.lemmatize(w) for w in tokens]
+
     return processed_tokens
 
 
@@ -111,7 +111,7 @@ def do_preprocessing(list_of_tweets: list, stop_word_flag=True,
         counter = Counter([w for tweet in list_of_tweets for w in tweet])
 
     else:
-        counter =None
+        counter = None
 
     for tweet in list_of_tweets:
 
@@ -149,7 +149,7 @@ def basic_features(tweets_list: list, feature: str):
         print("error")
 
 
-def do_TF_IDF_vectorization(data: list, test_data:list = None):
+def do_tf_idf_vectorization(data: list, test_data: list = None):
     assert isinstance(data[0], str)
 
     tfidf_vectorizer = TfidfVectorizer(use_idf=True)
@@ -163,7 +163,7 @@ def do_TF_IDF_vectorization(data: list, test_data:list = None):
     return data_tfidf.toarray().tolist(), tfidf_vectorizer.get_feature_names(), test_data_tfidf.toarray().tolist()
 
 
-def do_TF_vectorization(data: list, test_data:list = None):
+def do_tf_vectorization(data: list, test_data: list = None):
     assert isinstance(data[0], str)
 
     tf_vectorizer = CountVectorizer()
@@ -171,22 +171,17 @@ def do_TF_vectorization(data: list, test_data:list = None):
 
     if test_data:
         test_data_tf = tf_vectorizer.transform(test_data)
-        # test_data_tf = test_data_tf.todense()
     else:
         test_data_tf = None
 
     return data_tf.toarray().tolist(), tf_vectorizer.get_feature_names(), test_data_tf.toarray().tolist()
 
 
-@st.cache
 def train_w2v_model(tokenized_data: list):
-
-    model = Word2Vec(tokenized_data, min_count=1)
-
-    return model
+    return Word2Vec(tokenized_data, min_count=1)
 
 
-def do_W2V_vectorization(training_tweets: pd.DataFrame, testing_tweets: pd.DataFrame, testing_labels: pd.DataFrame):
+def do_w2v_vectorization(training_tweets: pd.DataFrame, testing_tweets: pd.DataFrame, testing_labels: pd.DataFrame):
 
     testing_labels_list = testing_labels.values.tolist()
     tokenized_data = [word_tokenize(sent) for sent in training_tweets.processed_text]
@@ -256,9 +251,17 @@ def get_bow_vectors(bow_model: CountVectorizer, tokens: pd.DataFrame):
     return bow_model.transform(tokens).toarray()
 
 
+def do_sentiment_analysis(df: pd.DataFrame, sentiment_type: str = "Vader"):
+
+    if sentiment_type == "Vader":
+        analyzer = SentimentIntensityAnalyzer()
+
+    return df.processed_text.apply(lambda x: analyzer.polarity_scores(x)["compound"]).array.reshape(-1, 1)
+
+
 def do_vectorization(training_df: pd.DataFrame, y_training: pd.DataFrame, testing_df: pd.DataFrame,
                      y_testing: pd.DataFrame, feature: str):
-    assert feature in ['Bag of Words', 'TF-IDF', 'Word Embeddings']
+    assert feature in ['Bag of Words', 'TF-IDF', 'Word Embeddings', 'Sentiment Analysis']
 
     if feature == "Bag of Words":
         bow_model = train_bow_model(training_df)
@@ -273,16 +276,75 @@ def do_vectorization(training_df: pd.DataFrame, y_training: pd.DataFrame, testin
         testing_vectors = get_bow_vectors(tf_idf_model, tokens=testing_df.processed_text)
 
     elif feature == "Word Embeddings":
-        training_temp_df, testing_temp_df = do_W2V_vectorization(training_df, testing_df, y_testing)
+        training_temp_df, testing_temp_df = do_w2v_vectorization(training_df, testing_df, y_testing)
 
         training_vectors = training_temp_df.text_vector.values.tolist()
         testing_vectors = testing_temp_df.text_vector.values.tolist()
 
         y_testing = testing_temp_df.target.values.tolist()
-    else:
-        assert feature == "sentiment"
-        print("TODO")
 
+    else:
+        # feature == "Sentiment Analysis"
+
+        training_vectors = do_sentiment_analysis(training_df)
+        testing_vectors = do_sentiment_analysis(testing_df)
 
     return training_vectors, y_training, testing_vectors, y_testing
 
+
+def get_model(model_name: str, x: list, y: list):
+    assert model_name == "rf"
+    assert len(x) == len(y)
+
+    parms = {'n_estimators': 30, 'min_samples_split': 8, 'min_samples_leaf': 5, 'max_features': 50, 'max_depth': 100,
+             'bootstrap': True, 'class_weight': "balanced"}
+    rf = RandomForestClassifier(**parms)  # LogisticRegression()
+    rf.fit(x, y)
+    return rf
+
+
+def do_classification(x_train: list, y_train: list, x_test: list, y_test: list, model_name: str = "rf"):
+
+    assert len(x_train) == len(y_train), f"mismatch in training data: " \
+                                                  f"{len(x_train)} vs. {len(y_train)}"
+    assert len(x_test) == len(y_test), f"mismatch in testing data: {len(x_test)} vs. {len(y_test)}"
+
+    model = get_model(model_name=model_name, x=x_train, y=y_train)
+
+    y_train_predict = model.predict(x_train)
+    y_test_predict = model.predict(x_test)
+
+    train_score = accuracy_score(y_true=y_train, y_pred=y_train_predict)
+    test_score = accuracy_score(y_true=y_test, y_pred=y_test_predict)
+
+    return train_score, test_score
+
+
+def perform_grid_search(classifier_name: str, x_train: list, y_train: list, x_test: list, y_test: list):
+    assert classifier_name == "rf", f"Error: have not selected a valid classification model: {classifier_name}"
+
+    model = RandomForestClassifier()
+    param_grid = {
+        'bootstrap': [True],
+        'max_depth': [3, 5, 10, 30, 40, 50, 60, 80, 90, 100],
+        'min_samples_leaf': [3, 4, 5, 10, 20, 40],
+        'min_samples_split': [8, 10, 12, 20, 40],
+        'n_estimators': [30, 50, 100, 200, 300, 1000, 1500],
+        'max_features': ['auto', 'log2', 50, 100]
+    }
+
+    grid_search = HalvingRandomSearchCV(estimator=model, param_distributions=param_grid, cv=5, n_jobs=-1)
+
+    # perform grid search
+    grid_search.fit(x_train, y_train)
+
+    # predict training and test
+    y_predict_training = grid_search.best_estimator_.predict(x_train)
+    y_predict_test = grid_search.best_estimator_.predict(x_test)
+
+    # calculate train and accuracy scores
+    train_score = accuracy_score(y_true=y_train, y_pred=y_predict_training)
+    test_score = accuracy_score(y_true=y_test, y_pred=y_predict_test)
+
+
+    return grid_search.best_estimator_, grid_search.best_params_, train_score, test_score
